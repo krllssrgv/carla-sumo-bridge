@@ -1,0 +1,23 @@
+venv/
+.venv/
+
+# byte-код
+pycache/
+*.py[cod]
+
+# редакторы / IDE
+*.swp
+*.swo
+*.log
+*.bak
+*.tmp
+.vscode/
+.idea/
+
+# системные файлы
+.DS_Store
+Thumbs.db
+
+# Python environment files
+pip-log.txt
+.env
