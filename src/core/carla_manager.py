@@ -3,7 +3,7 @@
 import carla
 import random
 
-from config import VEHICLE_BLUEPRINT
+from src.config import VEHICLE_BLUEPRINT
 
 class CarlaManager:
     def init(self, host, port):

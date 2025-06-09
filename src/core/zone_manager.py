@@ -1,6 +1,6 @@
 # core/zone_manager.py
 
-from config import ZONE_X
+from src.config import ZONE_X
 
 class ZoneManager:
     def init(self):

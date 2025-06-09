@@ -1,5 +1,3 @@
-# config.py
-
 SUMO_CFG_FILE = "./m.sumocfg"
 
 CARLA_SERVERS = {

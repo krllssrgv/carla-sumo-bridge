@@ -2,10 +2,8 @@
 
 import time
 
-from sumo.sumo_manager import SumoManager
-from carla.carla_manager import CarlaManager
-from core.zone_manager import ZoneManager
-from config import CARLA_SERVERS
+from src.core import SumoManager, CarlaManager, ZoneManager
+from src.config import CARLA_SERVERS
 
 def main():
     sumo = SumoManager()
@@ -39,5 +37,5 @@ def main():
             for vid in list(cm.vehicles.keys()):
                 cm.destroy_vehicle(vid)
 
-if name == "main":
-    main()
+# if __name__ == "main":
+main()

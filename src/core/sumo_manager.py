@@ -6,7 +6,7 @@ import traci
 import traci.constants as tc
 import subprocess
 
-from config import SUMO_CFG_FILE
+from src.config import SUMO_CFG_FILE
 
 class SumoManager:
     def init(self):
