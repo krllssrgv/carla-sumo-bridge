@@ -1,4 +1,9 @@
-SUMO_CFG_FILE = "./m.sumocfg"
+import os
+
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
+
+SUMO_CFG_FILE = os.path.join(BASE_DIR, "m.sumocfg")
 
 CARLA_SERVERS = {
     0: {"host": "localhost", "port": 2000},
