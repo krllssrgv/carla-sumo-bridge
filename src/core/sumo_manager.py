@@ -1,7 +1,5 @@
 # sumo/sumo_manager.py
 
-import os
-import sys
 import traci
 import traci.constants as tc
 import subprocess
@@ -14,13 +12,8 @@ class SumoManager:
         self.started = False
 
     def start(self):
-        sumo_binary = os.path.join(os.environ["SUMO_HOME"], "bin", "sumo")
-        self.sumo_process = subprocess.Popen(
-            [sumo_binary, "-c", SUMO_CFG_FILE, "--start", "--remote-port", "8813"],
-            stdout=subprocess.DEVNULL,
-            stderr=subprocess.DEVNULL,
-        )
-        traci.init(8813)
+        sumo_binary = "sumo"
+        traci.start([sumo_binary, "-c", SUMO_CFG_FILE, "--start"])
         self.started = True
 
     def step(self):
