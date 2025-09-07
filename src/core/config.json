@@ -1,0 +1,26 @@
+{
+  "sumo": {
+    "config_file": "path/to/scenario.sumocfg",
+    "step_length": 0.05
+  },
+  "carla": {
+    "worlds": [
+      {
+        "name": "A",
+        "host": "localhost",
+        "port": 2000
+      },
+      {
+        "name": "B",
+        "host": "localhost",
+        "port": 3000
+      }
+    ]
+  },
+  "zone": {
+    "axis": "x",
+    "start": -5.0,
+    "end": 5.0,
+    "z_offset": 0.1
+  }
+}
