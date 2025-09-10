@@ -87,22 +87,49 @@ class Bridge:
         self.world_a = self.client_a.get_world()
         self.world_b = self.client_b.get_world()
 
+        # Save original settings
         self._orig_settings_a = self.world_a.get_settings()
         self._orig_settings_b = self.world_b.get_settings()
 
+        # Apply synchronous mode
         self._apply_sync(self.world_a, self.cfg.sumo.step_length)
         self._apply_sync(self.world_b, self.cfg.sumo.step_length)
 
+        # Vehicle blueprints
         self.bps_a = self.world_a.get_blueprint_library().filter("vehicle.*")
         self.bps_b = self.world_b.get_blueprint_library().filter("vehicle.*")
         if not self.bps_a or not self.bps_b:
             raise RuntimeError("No vehicle blueprints found in CARLA")
 
+        # Actor registry
         self.actors: Dict[str, Dict[str, Optional[carla.Actor]]] = {}
         self._last_ids: set[str] = set()
 
-        # offset между сетями SUMO и CARLA (инициализируем позже)
+        # Net offset from SUMO (initialized later)
         self.offset = (0.0, 0.0)
+
+    # -------------------- helpers --------------------
+
+    def _apply_sync(self, world: carla.World, dt: float):
+        s = world.get_settings()
+        s.synchronous_mode = True
+        s.fixed_delta_seconds = dt
+        world.apply_settings(s)
+
+    def _safe_destroy(self, actor: carla.Actor):
+        try:
+            actor.destroy()
+        except Exception:
+            pass
+
+    def _destroy_vehicle_everywhere(self, vid: str):
+        if vid in self.actors:
+            for key in ("A", "B"):
+                if self.actors[vid].get(key):
+                    self._safe_destroy(self.actors[vid][key])
+            self.actors.pop(vid, None)
+
+    # -------------------- SUMO --------------------
 
     def start_sumo(self):
         traci.start([
@@ -111,7 +138,6 @@ class Bridge:
             "--step-length", str(self.cfg.sumo.step_length),
             "--quit-on-end"
         ])
-        # получаем offset сети SUMO (смещение net.xml)
         try:
             net_offset = traci.simulation.getNetOffset()  # (x,y)
             self.offset = (net_offset[0], net_offset[1])
@@ -120,16 +146,17 @@ class Bridge:
             print("[bridge] Warning: could not get net offset from SUMO, using (0,0)")
             self.offset = (0.0, 0.0)
 
-    # ---- новая функция ----
+    # -------------------- coordinate conversion --------------------
+
     def sumo_to_carla_transform(self, xs, ys, angle, z):
-        # yaw: SUMO (0=east, CCW) -> CARLA (0=+X, CW)
+        # Convert SUMO angle (0=east, CCW) → CARLA yaw (0=+X, CW)
         yaw = -angle + 90
 
-        # учёт offset
+        # Apply SUMO net offset
         x_off = xs - self.offset[0]
         y_off = ys - self.offset[1]
 
-        # инверсия Y для CARLA
+        # Flip Y for CARLA
         x_carla = x_off
         y_carla = -y_off
 
@@ -137,6 +164,44 @@ class Bridge:
             carla.Location(x=x_carla, y=y_carla, z=z),
             carla.Rotation(yaw=yaw)
         )
+
+    # -------------------- spawning --------------------
+
+    def _spawn(self, world: carla.World, bps, vid: str, tf: carla.Transform) -> Optional[carla.Actor]:
+        idx = abs(hash(vid)) % len(bps)
+        bp = bps[idx]
+        if bp.has_attribute("role_name"):
+            bp.set_attribute("role_name", vid)
+        try:
+            actor = world.try_spawn_actor(bp, tf)
+            if actor is None:
+                # try slightly higher Z
+                tf.location.z += 0.5
+                actor = world.try_spawn_actor(bp, tf)
+            return actor
+        except Exception as e:
+            print(f"[spawn] failed for {vid}: {e}")
+            return None
+
+    # -------------------- assignment --------------------
+
+    def _assign_worlds(self, x: float, y: float):
+        if self.cfg.zone.axis == "x":
+            if x < self.cfg.zone.start:
+                return {"A"}
+            elif x > self.cfg.zone.end:
+                return {"B"}
+            else:
+                return {"A", "B"}
+        else:
+            if y < self.cfg.zone.start:
+                return {"A"}
+            elif y > self.cfg.zone.end:
+                return {"B"}
+            else:
+                return {"A", "B"}
+
+    # -------------------- main loop --------------------
 
     def run(self):
         print("[bridge] Starting SUMO-GUI…")
@@ -147,7 +212,7 @@ class Bridge:
             traci.simulationStep()
             ids = set(traci.vehicle.getIDList())
 
-            # Remove vehicles gone
+            # remove vehicles gone
             for gone in list(self._last_ids - ids):
                 self._destroy_vehicle_everywhere(gone)
 
@@ -183,20 +248,23 @@ class Bridge:
             self.world_b.tick()
             self._last_ids = ids
 
-    def _spawn(self, world: carla.World, bps, vid: str, tf: carla.Transform) -> Optional[carla.Actor]:
-        idx = abs(hash(vid)) % len(bps)
-        bp = bps[idx]
-        if bp.has_attribute("role_name"):
-            bp.set_attribute("role_name", vid)
+    # -------------------- shutdown --------------------
+
+    def close(self):
+        for vid in list(self.actors.keys()):
+            self._destroy_vehicle_everywhere(vid)
         try:
-            actor = world.try_spawn_actor(bp, tf)
-            if actor is None:
-                tf.location.z += 0.5
-                actor = world.try_spawn_actor(bp, tf)
-            return actor
-        except Exception as e:
-            print(f"[spawn] failed for {vid}: {e}")
-            return None
+            self.world_a.apply_settings(self._orig_settings_a)
+        except Exception:
+            pass
+        try:
+            self.world_b.apply_settings(self._orig_settings_b)
+        except Exception:
+            pass
+        try:
+            traci.close(False)
+        except Exception:
+            pass
 
 # -------------------- entrypoint --------------------
 
