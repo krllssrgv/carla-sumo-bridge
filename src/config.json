@@ -1,7 +1,7 @@
 {
   "sumo": {
-    "config_file": "m.sumocfg",
-    "net_file": "m.net.xml",
+    "config_file": "simulation.sumocfg",
+    "net_file": "map.net.xml",
     "step_length": 0.5
   },
   "carla": {
