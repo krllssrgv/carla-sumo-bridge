@@ -170,8 +170,10 @@ class Bridge:
     def sumo_to_carla_transform(self, xs, ys, angle, z):
         # Transform coords convBoundary->origBoundary
         x, y = self.transform(xs, ys)
+
+        y = -y
         # Yaw conversion
-        yaw = -angle + 90
+        yaw = angle - 90
         return carla.Transform(
             carla.Location(x=x, y=y, z=z),
             carla.Rotation(pitch=0.0, yaw=yaw, roll=0.0)
