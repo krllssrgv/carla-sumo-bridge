@@ -1,0 +1,9 @@
+./CarlaUE4.sh -ResX=800 -ResY=500 -quality-level=Low -carla-rpc-port=2000 -opengl
+./CarlaUE4.sh -ResX=800 -ResY=500 -quality-level=Low -carla-rpc-port=3000 -opengl
+
+source venv/bin/activate
+
+python3.8 config.py -p 2000 -x ../l.xodr
+python3.8 config.py -p 3000 -x ../r.xodr
+
+python3.8 bridge.py config.json
