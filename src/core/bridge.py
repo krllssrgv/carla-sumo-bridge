@@ -1,13 +1,11 @@
-# bridge.py
 import json
 import pprint
 import signal
 import sys
-import time
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass, asdict
 from typing import Dict, List, Optional
 
-# --- External deps: carla, traci (SUMO) ---
 import carla
 import traci
 
@@ -17,6 +15,7 @@ import traci
 @dataclass
 class SumoConfig:
     config_file: str
+    net_file: str
     step_length: float
 
 @dataclass
@@ -27,21 +26,31 @@ class CarlaWorldConfig:
 
 @dataclass
 class ZoneConfig:
-    axis: str   # "x" or "y" (первая версия: "x")
+    axis: str
     start: float
     end: float
     z_offset: float
+
+@dataclass
+class Boundary:
+    minX: float
+    minY: float
+    maxX: float
+    maxY: float
 
 class Config:
     def __init__(self, path: str):
         with open(path, "r") as f:
             data = json.load(f)
 
+        # SUMO
         self.sumo = SumoConfig(
             config_file=data["sumo"]["config_file"],
-            step_length=float(data["sumo"].get("step_length", 0.05)),
+            net_file=data["sumo"]["net_file"],
+            step_length=float(data["sumo"].get("step_length", 0.05))
         )
 
+        # CARLA
         self.carla_worlds: List[CarlaWorldConfig] = [
             CarlaWorldConfig(name=w["name"], host=w["host"], port=int(w["port"]))
             for w in data["carla"]["worlds"]
@@ -49,6 +58,7 @@ class Config:
         if len(self.carla_worlds) != 2:
             raise ValueError("Config must define exactly 2 CARLA worlds")
 
+        # Zone
         z = data["zone"]
         if z["axis"] not in ("x", "y"):
             raise ValueError("zone.axis must be 'x' or 'y'")
@@ -56,21 +66,43 @@ class Config:
             axis=z["axis"],
             start=float(z["start"]),
             end=float(z["end"]),
-            z_offset=float(z.get("z_offset", 0.1)),
+            z_offset=float(z.get("z_offset", 0.1))
         )
 
     def to_dict(self):
         return {
             "sumo": asdict(self.sumo),
             "carla": [asdict(w) for w in self.carla_worlds],
-            "zone": asdict(self.zone),
+            "zone": asdict(self.zone)
         }
 
     def pretty_print(self):
         pprint.pprint(self.to_dict())
 
 
-# -------------------- Bridge --------------------
+# -------------------- Coord transform --------------------
+
+def read_boundaries_from_net(net_file: str):
+    tree = ET.parse(net_file)
+    root = tree.getroot()
+    location = root.find("location")
+    if location is None:
+        raise ValueError("No <location> found in net.xml")
+
+    conv_vals = list(map(float, location.get("convBoundary").split(",")))
+    orig_vals = list(map(float, location.get("origBoundary").split(",")))
+
+    conv = Boundary(*conv_vals)
+    orig = Boundary(*orig_vals)
+    return conv, orig
+
+def create_coordinate_transformer(conv: Boundary, orig: Boundary):
+    def transform(convX: float, convY: float):
+        x = orig.minX + ((convX - conv.minX) / (conv.maxX - conv.minX)) * (orig.maxX - orig.minX)
+        y = orig.minY + ((convY - conv.minY) / (conv.maxY - conv.minY)) * (orig.maxY - orig.minY)
+        return x, y
+    return transform
+
 
 # -------------------- Bridge --------------------
 
@@ -78,7 +110,7 @@ class Bridge:
     def __init__(self, cfg: Config):
         self.cfg = cfg
 
-        # Connect CARLA worlds
+        # Connect CARLA
         self.client_a = carla.Client(self.cfg.carla_worlds[0].host, self.cfg.carla_worlds[0].port)
         self.client_b = carla.Client(self.cfg.carla_worlds[1].host, self.cfg.carla_worlds[1].port)
         self.client_a.set_timeout(5.0)
@@ -87,28 +119,25 @@ class Bridge:
         self.world_a = self.client_a.get_world()
         self.world_b = self.client_b.get_world()
 
-        # Save original settings
+        # Save settings
         self._orig_settings_a = self.world_a.get_settings()
         self._orig_settings_b = self.world_b.get_settings()
 
-        # Apply synchronous mode
+        # Sync
         self._apply_sync(self.world_a, self.cfg.sumo.step_length)
         self._apply_sync(self.world_b, self.cfg.sumo.step_length)
 
-        # Vehicle blueprints
+        # Blueprints
         self.bps_a = self.world_a.get_blueprint_library().filter("vehicle.*")
         self.bps_b = self.world_b.get_blueprint_library().filter("vehicle.*")
-        if not self.bps_a or not self.bps_b:
-            raise RuntimeError("No vehicle blueprints found in CARLA")
 
-        # Actor registry
+        # Actors registry
         self.actors: Dict[str, Dict[str, Optional[carla.Actor]]] = {}
         self._last_ids: set[str] = set()
 
-        # Net offset from SUMO (initialized later)
-        self.offset = (0.0, 0.0)
-
-    # -------------------- helpers --------------------
+        # Prepare coordinate transformer
+        conv, orig = read_boundaries_from_net(self.cfg.sumo.net_file)
+        self.transform = create_coordinate_transformer(conv, orig)
 
     def _apply_sync(self, world: carla.World, dt: float):
         s = world.get_settings()
@@ -129,8 +158,6 @@ class Bridge:
                     self._safe_destroy(self.actors[vid][key])
             self.actors.pop(vid, None)
 
-    # -------------------- SUMO --------------------
-
     def start_sumo(self):
         traci.start([
             "sumo-gui",
@@ -138,34 +165,17 @@ class Bridge:
             "--step-length", str(self.cfg.sumo.step_length),
             "--quit-on-end"
         ])
-        try:
-            net_offset = traci.simulation.getNetOffset()  # (x,y)
-            self.offset = (net_offset[0], net_offset[1])
-            print(f"[bridge] SUMO net offset: {self.offset}")
-        except Exception:
-            print("[bridge] Warning: could not get net offset from SUMO, using (0,0)")
-            self.offset = (0.0, 0.0)
-
-    # -------------------- coordinate conversion --------------------
+        print("[bridge] SUMO started")
 
     def sumo_to_carla_transform(self, xs, ys, angle, z):
-        # Convert SUMO angle (0=east, CCW) → CARLA yaw (0=+X, CW)
+        # Transform coords convBoundary->origBoundary
+        x, y = self.transform(xs, ys)
+        # Yaw conversion
         yaw = -angle + 90
-
-        # Apply SUMO net offset
-        x_off = xs - self.offset[0]
-        y_off = ys - self.offset[1]
-
-        # Flip Y for CARLA
-        x_carla = x_off
-        y_carla = -y_off
-
         return carla.Transform(
-            carla.Location(x=x_carla, y=y_carla, z=z),
-            carla.Rotation(yaw=yaw)
+            carla.Location(x=x, y=y, z=z),
+            carla.Rotation(pitch=0.0, yaw=yaw, roll=0.0)
         )
-
-    # -------------------- spawning --------------------
 
     def _spawn(self, world: carla.World, bps, vid: str, tf: carla.Transform) -> Optional[carla.Actor]:
         idx = abs(hash(vid)) % len(bps)
@@ -175,15 +185,12 @@ class Bridge:
         try:
             actor = world.try_spawn_actor(bp, tf)
             if actor is None:
-                # try slightly higher Z
                 tf.location.z += 0.5
                 actor = world.try_spawn_actor(bp, tf)
             return actor
         except Exception as e:
             print(f"[spawn] failed for {vid}: {e}")
             return None
-
-    # -------------------- assignment --------------------
 
     def _assign_worlds(self, x: float, y: float):
         if self.cfg.zone.axis == "x":
@@ -201,8 +208,6 @@ class Bridge:
             else:
                 return {"A", "B"}
 
-    # -------------------- main loop --------------------
-
     def run(self):
         print("[bridge] Starting SUMO-GUI…")
         self.start_sumo()
@@ -212,7 +217,7 @@ class Bridge:
             traci.simulationStep()
             ids = set(traci.vehicle.getIDList())
 
-            # remove vehicles gone
+            # Remove disappeared
             for gone in list(self._last_ids - ids):
                 self._destroy_vehicle_everywhere(gone)
 
@@ -248,8 +253,6 @@ class Bridge:
             self.world_b.tick()
             self._last_ids = ids
 
-    # -------------------- shutdown --------------------
-
     def close(self):
         for vid in list(self.actors.keys()):
             self._destroy_vehicle_everywhere(vid)
@@ -266,7 +269,8 @@ class Bridge:
         except Exception:
             pass
 
-# -------------------- entrypoint --------------------
+
+# -------------------- Entrypoint --------------------
 
 def main():
     if len(sys.argv) != 2:

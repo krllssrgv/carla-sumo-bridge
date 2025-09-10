@@ -1,6 +1,7 @@
 {
   "sumo": {
     "config_file": "m.sumocfg",
+    "net_file": "m.net.xml",
     "step_length": 0.5
   },
   "carla": {
